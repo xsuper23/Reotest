@@ -22,17 +22,17 @@ GATEWAYS = netifaces.gateways()
 DEFAULT_GATEWAY_ADDRESS = None if GATEWAYS == None or GATEWAYS['default'] == None else GATEWAYS['default'][netifaces.AF_INET]
 BINDING_IFACE_IP = '' if DEFAULT_GATEWAY_ADDRESS == None else netifaces.ifaddresses(DEFAULT_GATEWAY_ADDRESS[1])[netifaces.AF_INET][0]['addr']
 
-P2P_RELAY_HOSTS = [
-    socket.gethostbyname("p2p.reolink.com"),
-    socket.gethostbyname("p2p1.reolink.com"),
-    socket.gethostbyname("p2p2.reolink.com"),
-    socket.gethostbyname("p2p3.reolink.com"),
-    socket.gethostbyname("p2p14.reolink.com"),
-    socket.gethostbyname("p2p15.reolink.com"),
-    socket.gethostbyname("p2p6.reolink.com"),
-    socket.gethostbyname("p2p7.reolink.com"),
-    socket.gethostbyname("p2p8.reolink.com"),
-    socket.gethostbyname("p2p9.reolink.com")
+P2P_RELAY_HOSTNAMES = [
+    "p2p.reolink.com",
+    "p2p1.reolink.com",
+    "p2p2.reolink.com",
+    "p2p3.reolink.com",
+    "p2p14.reolink.com",
+    "p2p15.reolink.com",
+    "p2p6.reolink.com",
+    "p2p7.reolink.com",
+    "p2p8.reolink.com",
+    "p2p9.reolink.com"
 ]
 
 class BaichuanUdpLayer:
@@ -45,6 +45,7 @@ class BaichuanUdpLayer:
         self.connection_id = -1
         self.last_send_packet_id = 0
         self.last_received_packet_id = -1
+        self.wait_acknowledgement = 0
         self.target_address = (None, None)
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         server_address = (BINDING_IFACE_IP, self.communication_port)
@@ -53,6 +54,17 @@ class BaichuanUdpLayer:
         self.unack_messages = {}
         #Generate new client ID to say the cammera that instance is a a new client to broadcast information
         self.tid = random.randint(0, 4000)
+        self.p2p_relay_hosts = self._lookup_available_p2p_hosts()
+    
+    def _lookup_available_p2p_hosts(self):
+        relay_hosts = []
+        for hostname in P2P_RELAY_HOSTNAMES:
+            try:
+                host = socket.gethostbyname(hostname)
+                relay_hosts.append(host)
+            except socket.gaierror:
+                pass
+        return relay_hosts
     
     def discover_device(self):
         self.socket.settimeout(0.2)
@@ -103,9 +115,9 @@ class BaichuanUdpLayer:
         index = -1
         while True:                
             index += 1  
-            if index >= len(P2P_RELAY_HOSTS):
+            if index >= len(self.p2p_relay_hosts):
                 raise "No P2P host available to register"
-            host = P2P_RELAY_HOSTS[index]
+            host = self.p2p_relay_hosts[index]
             self._send_p2p_discovery(host)
             try:
                 data, sender = self.socket.recvfrom(4096)
@@ -284,9 +296,14 @@ class BaichuanUdpLayer:
         if udp_message_id != UDP_MESSAGE_ID_ACK or client_id != self.client_id:
             return
         if packet_id < self.last_send_packet_id - 1:
-            self.resend_unacknowledged_packets(packet_id, self.last_send_packet_id - 1)
-        else:
+            self.wait_acknowledgement += 1
+            # Give the camera some time to send
+            # the correct acknowledged packet id
+            if self.wait_acknowledgement > 10:
+                self.resend_unacknowledged_packets(packet_id, self.last_send_packet_id - 1)
+        elif self.wait_acknowledgement != 0:
             self.unack_messages = {}
+            self.wait_acknowledgement = 0
         
     def resend_unacknowledged_packets(self, packet_id, max_message):
         for i in range(packet_id + 1, max_message + 1):
